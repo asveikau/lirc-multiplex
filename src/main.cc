@@ -401,6 +401,9 @@ struct Client : public SockBase
          ERROR_CHECK(err);
       }
 
+      if (!*dev)
+         ERROR_SET(err, unknown, "Device not open");
+
       (*dev)->WriteCommand(
          buf,
          [This] (const char *buf, size_t n, error *err) -> void
