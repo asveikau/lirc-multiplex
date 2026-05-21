@@ -7,9 +7,15 @@
 */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <vector>
 #include <algorithm>
+
+#include <sys/stat.h>
+#include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 
 #include <common/error.h>
 #include <common/logger.h>
@@ -526,6 +532,12 @@ main(int argc, char **argv)
    error err;
    common::Pointer<pollster::waiter> eventLoop;
    pollster::StreamServer server;
+   std::vector<const char *> unixSockPaths;
+   const char *chmodArg = nullptr;
+   char *chownArg = nullptr;
+   uid_t uid = -1;
+   gid_t gid = -1;
+   mode_t mode = 0666;
 
    log_register_callback(
       [] (void *np, const char *p) -> void { fputs(p, stderr); },
@@ -566,7 +578,20 @@ main(int argc, char **argv)
          if (i+1 >= argc ||
              !ParsePath(
                argv[i+1],
-               [&] (const char *path) -> void { server.AddUnixDomain(path, &err); },
+               [&] (const char *path) -> void
+               {
+                  server.AddUnixDomain(path, &err);
+                  ERROR_CHECK(&err);
+                  try
+                  {
+                     unixSockPaths.push_back(path);
+                  }
+                  catch (const std::bad_alloc &)
+                  {
+                     ERROR_SET(&err, nomem);
+                  }
+               exit:;
+               },
                [&] (int port) -> void { server.AddPort(port, &err); }
              ))
          {
@@ -589,17 +614,72 @@ main(int argc, char **argv)
          txDevice.path = argv[i+1];
          ++i;
       }
+      else if (!strcmp(arg, "-chmod"))
+      {
+         if (i+1 >= argc)
+            ERROR_SET(&err, unknown, "\nusage: -chmod <perms>");
+         chmodArg = argv[i+1];
+         ++i;
+      }
+      else if (!strcmp(arg, "-chown"))
+      {
+         if (i+1 >= argc)
+            ERROR_SET(&err, unknown, "\nusage: -chown user[:group]");
+         chownArg = argv[i+1];
+         ++i;
+      }
    }
 
    if (!server.on_client || !rxDevice.path)
    {
       ERROR_SET(&err, unknown,
-         "\nusage: lirc-multiplex -server <unixpath | tcp:port> "
-                                 "-rx <unixpath> "
-                                 "-tx <unixpath>\n\n"
-         "Combines a receive LIRC socket with a transmit LIRC socket, into the socket specified by -server"
+         "\nusage: lirc-multiplex -server <unixpath | tcp:port>\n"
+           "                      -rx <unixpath> "
+                                 "-tx <unixpath>\n"
+          "                      [-chmod <permissions>]\n"
+          "                      [-chown <user[:group]>]\n\n"
+         "Combines a receive LIRC socket with a transmit LIRC socket, into the socket specified by -server.\n"
+         "Optionally, you can set permissions of any Unix domain sockets created with -chmod and -chown options"
       );
    }
+
+   if (chmodArg)
+   {
+      char *end = nullptr;
+      mode = strtoll(chmodArg, &end, 8);
+      if (!end || end == chmodArg || *end)
+         ERROR_SET(&err, unknown, "Error parsing chmod arg");
+   }
+
+   if (chownArg)
+   {
+      char *colon = strchr(chownArg, ':');
+      if (colon)
+      {
+         *colon++ = 0;
+         struct group *gr = getgrnam(colon);
+         if (!gr)
+            ERROR_SET(&err, unknown, "chown: Could not find group");
+         gid = gr->gr_gid;
+      }
+      struct passwd *p = getpwnam(chownArg);
+      if (!p)
+         ERROR_SET(&err, unknown, "chown: Could not find user");
+      uid = p->pw_uid;
+   }
+
+   if (chmodArg || chownArg)
+   {
+      for (auto path : unixSockPaths)
+      {
+         if (chownArg && chown(path, uid, gid))
+            ERROR_SET(&err, errno, errno);
+         if (chmodArg && chmod(path, mode))
+            ERROR_SET(&err, errno, errno);
+      }
+   }
+
+   unixSockPaths.resize(0);
 
    for (;;)
    {
