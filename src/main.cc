@@ -659,12 +659,12 @@ main(int argc, char **argv)
          *colon++ = 0;
          struct group *gr = getgrnam(colon);
          if (!gr)
-            ERROR_SET(&err, unknown, "chown: Could not find group");
+            ERROR_SET(&err, fmt, "Could not find group %s", colon);
          gid = gr->gr_gid;
       }
       struct passwd *p = getpwnam(chownArg);
       if (!p)
-         ERROR_SET(&err, unknown, "chown: Could not find user");
+         ERROR_SET(&err, fmt, "Could not find user %s", chownArg);
       uid = p->pw_uid;
    }
 
